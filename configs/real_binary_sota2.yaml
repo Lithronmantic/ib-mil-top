@@ -1,0 +1,52 @@
+seed: 42
+hardware:
+  mixed_precision: true
+  num_workers: 4
+  gradient_accumulation_steps: 1
+
+model:
+  # 这部分按你的 EnhancedAVDetector 配置来；若你原先直接传整份cfg也可
+  num_classes: 2
+  video_dim: 128
+  audio_dim: 256
+  d_model: 256
+  fusion:
+    type: coattention     # 或 concat
+    d_model: 256
+  align_mode: shift
+  early_fusion:
+    enable: true
+    dim: 256
+    hidden: 128
+    stages: [0]
+
+data:
+  root: null                 # 若 CSV 用相对路径，这里填根目录；绝对路径就留 null
+  train_csv: "data/full_dataset.csv"
+  val_csv:   "data/val.csv"
+  unlabeled_csv: "data/unlabeled.csv"
+  num_classes: 2
+  class_names: ["Good", "Defect"]
+  video:
+    img_size: 224
+    num_frames: 8
+    fps: 30
+  audio:
+    sample_rate: 16000
+    duration_sec: 2.56
+    n_mels: 128
+    use_waveform: true
+    normalize: true
+
+training:
+  batch_size: 8
+  num_epochs: 10
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4
+  log_every: 10
+
+ssl:
+  fixmatch_thresh: 0.85
+  consistency_T: 2.0
+  unsup_weight_max: 1.0
+  ema_decay: 0.999

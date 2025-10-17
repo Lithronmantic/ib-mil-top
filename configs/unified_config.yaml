@@ -1,0 +1,124 @@
+# ============================================================================
+# 统一训练配置文件
+# ============================================================================
+
+# 实验配置
+experiment:
+  name: "unified_training_v1"
+  workdir: "./experiments"
+
+# 数据配置
+data:
+  root: "./data/raw"  # 数据根目录
+  train_csv: "./data/train.csv"
+  val_csv: "./data/val.csv"
+  test_csv: "./data/test.csv"
+
+  # 视频参数
+  T_v: 16  # 采样帧数
+
+  # 音频参数
+  T_a: 32  # 音频时间步
+  mel: 64  # Mel bins
+  sr: 16000  # 采样率
+
+  num_classes: 2
+
+# 模型配置
+model:
+  # Backbone配置
+  video:
+    backbone: "resnet18_2d"  # resnet18_2d, timesformer
+
+  audio:
+    backbone: "mel_spectrogram_cnn"  # mel_spectrogram_cnn, vggish
+    sample_rate: 16000
+
+  # 融合配置
+  fusion:
+    type: "cfa"  # cfa, ib, coattn
+    d_model: 256
+    # CoAttention专用参数
+    num_layers: 2
+    num_heads: 8
+    dropout: 0.1
+
+  # 时序编码器
+  temporal:
+    d_model: 256
+    n_layers: 2
+
+  # MIL头
+  mil:
+    topk_ratio: 0.2
+
+# 训练配置
+train:
+  # 基础参数
+  epochs: 100
+  batch_size: 8
+  lr: 1e-3
+  weight_decay: 1e-4
+  min_lr: 1e-6
+  workers: 4
+
+  # 早停
+  patience: 15
+  early_stop_metric: "auprc_minority"  # auprc_minority, mcc, f1_minority
+  minority_class: 1  # 少数类标签
+
+  # ========================================
+  # 损失函数配置
+  # ========================================
+
+  # 分类损失类型
+  loss_type: "focal"  # focal, cb, ce
+
+  # Focal Loss参数
+  focal_alpha: 0.75  # 正类权重（根据类别比例调整）
+  focal_gamma: 2.0   # 聚焦参数（越大越关注难样本）
+
+  # Class-Balanced Loss参数（当loss_type=cb时使用）
+  samples_per_class: [800, 200]  # [负类数量, 正类数量]
+  cb_beta: 0.9999  # 有效样本数衰减率
+
+  # ========================================
+  # 对比学习配置
+  # ========================================
+  use_contrastive: true
+  contrastive_weight: "0.3->0.5"  # 动态权重：从0.3逐渐增加到0.5
+  contrastive_temp: 0.07  # 温度参数
+  contrastive_dim: 128  # 投影维度
+  contrastive_queue: 0  # Memory bank大小（0表示不使用）
+
+  # ========================================
+  # 知识蒸馏配置
+  # ========================================
+  use_kd: true
+  kd_weight: "0.2->0.4"  # 动态权重
+  kd_temp: 2.0  # 蒸馏温度
+  kd_bimodal_weight: 0.5  # 单模态间蒸馏的权重
+
+  # ========================================
+  # 一致性正则化配置
+  # ========================================
+  use_consistency: true
+  consistency_weight: 0.1
+  consistency_type: "mse"  # mse, kl, js, cosine
+  consistency_temp: 1.0
+
+  # ========================================
+  # MIL Ranking损失（可选）
+  # ========================================
+  use_ranking: false
+  ranking_weight: 0.3
+  ranking_margin: 0.5
+  ranking_topk: 4
+
+  # ========================================
+  # 数据增强
+  # ========================================
+  use_augmentation: true
+
+# 随机种子
+seed: 3407

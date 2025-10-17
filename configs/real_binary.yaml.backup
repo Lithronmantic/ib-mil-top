@@ -1,0 +1,33 @@
+data:
+  T_a: 32
+  T_v: 16
+  mel: 64
+  root: ./intel_robotic_welding_dataset
+  sr: 16000
+  test_csv: ./test.csv
+  train_csv: ./train.csv
+  val_csv: ./val.csv
+experiment:
+  name: real_binary
+  workdir: ./runs
+model:
+  audio:
+    backbone: mel_spectrogram_cnn
+  fusion:
+    d_model: 256
+  num_classes: 2
+  temporal:
+    d_model: 256
+    n_layers: 2
+  video:
+    backbone: resnet18_2d
+train:
+  batch_size: 8
+  epochs: 50
+  ib_beta: 0.1
+  ib_warmup_ratio: 0.3
+  lr: 1e-3
+  patience: 8
+  pos_sampling_weight: 2.0
+  weighted_sampling: true
+  workers: 4

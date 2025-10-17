@@ -1,0 +1,294 @@
+# =============================================================================
+# 完整配置文件 - Intel焊接数据集SOTA训练
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 实验元信息
+# -----------------------------------------------------------------------------
+experiment_name: "intel_welding_sota"
+description: "完整SOTA方法集成：Co-Attention + GRAM + KD + Consistency + FixMatch"
+version: "1.0"
+seed: 42
+
+# -----------------------------------------------------------------------------
+# Wandb日志（可选）
+# -----------------------------------------------------------------------------
+use_wandb: true
+wandb_project: "avtop-training"
+wandb_name: "intel_welding_coattn_gram"  # 会自动添加时间戳
+
+# -----------------------------------------------------------------------------
+# 数据配置
+# -----------------------------------------------------------------------------
+data:
+  train_csv: "data/full_dataset.csv"   # ← 改这里
+  val_csv:   "data/val.csv"
+  unlabeled_csv: "data/unlabeled.csv"  # 保留无妨，但当前脚本不会读
+  num_classes: 2
+  class_names: ["Good", "Defect"]
+  audio_sr: 16000
+  max_audio_length: 0.3
+  video_size: [224, 224]
+  max_video_frames: 16
+  cache_mode: "none"
+
+
+# -----------------------------------------------------------------------------
+# 模型配置
+# -----------------------------------------------------------------------------
+model:
+  # Backbone选择
+  video_backbone: "resnet18_2d"  # 选项: resnet18_2d, resnet50_2d, r2plus1d
+  audio_backbone: "mel_spectrogram_cnn"  # 选项: mel_spectrogram_cnn, vggish
+
+  # 特征维度（backbone输出）
+  video_dim: 512
+  audio_dim: 128
+
+  # 类别数
+  num_classes: 2
+
+  # Pretrained权重
+  pretrained: true
+
+  # 辅助分类头（用于KD）
+  use_aux_heads: true
+
+# 时序编码器配置（可选）
+use_temporal_encoder: true
+temporal_hidden_dim: 256
+temporal_layers: 1
+
+# -----------------------------------------------------------------------------
+# 融合配置（关键！）
+# -----------------------------------------------------------------------------
+fusion:
+  type: "coattention"  # 选项: cfa, ib, coattention
+
+  # Co-Attention专用参数
+  d_model: 256  # 融合后的特征维度
+  bottleneck_dim: 32  # Attention Bottleneck维度（越小越快，建议16-64）
+  num_layers: 2  # Co-Attention层数
+  num_heads: 8  # 多头注意力头数
+  dropout: 0.1
+
+  # CFA/IB专用参数（如果使用）
+  beta: 0.1  # Information Bottleneck的β参数
+
+# -----------------------------------------------------------------------------
+# 损失函数配置
+# -----------------------------------------------------------------------------
+loss:
+  lambda_contrastive: 0.3
+  lambda_kd: 0.2
+  lambda_consistency: 0.1   # ← 若无标签利用率偏低/拟合不动，可先升到 0.3 观察
+  temperature: 0.07
+  kd_temperature: 4.0
+# -----------------------------------------------------------------------------
+# 训练配置
+# -----------------------------------------------------------------------------
+training:
+  # 基本参数
+  num_epochs: 1
+  batch_size: 8  # 如果显存不足，降到4
+
+  # 有标签/无标签批次比例（用于半监督）
+  labeled_batch_size: 4
+  unlabeled_batch_size: 4
+
+  # 优化器
+  optimizer: "adamw"  # 选项: adam, adamw, sgd
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-2
+
+  # 学习率调度
+  scheduler: "cosine"  # 选项: cosine, step, plateau, none
+  step_size: 30  # StepLR专用
+  gamma: 0.1  # StepLR专用
+
+  # 保存策略
+  save_every: 5  # 每N个epoch保存一次
+  keep_last_n: 5  # 保留最近N个checkpoint
+
+  # 早停（可选）
+  early_stopping: false
+  patience: 15
+
+# -----------------------------------------------------------------------------
+# 半监督学习配置（FixMatch）
+# -----------------------------------------------------------------------------
+semi_supervised:
+  enable: true
+
+  # 伪标签
+  confidence_threshold: 0.95  # 伪标签置信度阈值
+  pseudo_label_warmup: 10  # 前N个epoch不使用伪标签
+
+  # 强弱增强
+  weak_augmentation: true
+  strong_augmentation: true
+
+  # FixMatch权重
+  lambda_unsup: 1.0  # 无监督损失权重
+
+# -----------------------------------------------------------------------------
+# 硬件配置
+# -----------------------------------------------------------------------------
+hardware:
+  # GPU设置
+  use_cuda: true
+  device_ids: [0]  # GPU ID列表，单卡训练用[0]
+
+  # 多GPU（DataParallel）
+  use_multi_gpu: false
+
+  # 混合精度训练（FP16，节省显存）
+  mixed_precision: false
+
+  # DataLoader
+  num_workers: 4  # 数据加载线程数
+  pin_memory: true  # 固定内存（加速CPU->GPU传输）
+
+  # 梯度累积（变相增大batch size）
+  gradient_accumulation_steps: 1  # 设为2相当于batch_size翻倍
+
+# -----------------------------------------------------------------------------
+# 调试与日志
+# -----------------------------------------------------------------------------
+debug:
+  enable: false  # 调试模式（只运行少量batch）
+  max_batches: 5  # 调试模式下每个epoch最多运行的batch数
+
+logging:
+  log_interval: 10  # 每N个batch打印一次日志
+  save_images: false  # 是否保存可视化图像
+
+  # TensorBoard（备选）
+  use_tensorboard: false
+  tensorboard_dir: "runs/sota_training"
+
+# -----------------------------------------------------------------------------
+# 数据增强配置（工业级）
+# -----------------------------------------------------------------------------
+augmentation:
+  audio:
+    # SpecAugment
+    freq_mask_num: 2
+    freq_mask_param: 27
+    time_mask_num: 2
+    time_mask_param: 40
+
+    # 时域增强
+    time_stretch: true
+    time_stretch_rate: [0.8, 1.2]
+
+    pitch_shift: true
+    pitch_shift_steps: [-2, 2]
+
+    # 噪声
+    add_noise: true
+    noise_factor: 0.005
+
+  video:
+    # 空间增强
+    random_crop: true
+    random_flip: true
+    color_jitter: true
+
+    # 时序增强
+    random_temporal_crop: true
+
+    # MixUp/CutMix（可选）
+    use_mixup: false
+    mixup_alpha: 0.2
+
+    use_cutmix: false
+    cutmix_alpha: 1.0
+
+# -----------------------------------------------------------------------------
+# 评估配置
+# -----------------------------------------------------------------------------
+evaluation:
+  # 评估指标
+  metrics: ["accuracy", "precision", "recall", "f1", "auc"]
+
+  # 混淆矩阵
+  save_confusion_matrix: true
+
+  # 注意力可视化
+  visualize_attention: true
+  num_vis_samples: 10
+
+  # 单模态对比
+  evaluate_modalities: true  # 评估Audio-only, Video-only, Fusion
+
+# -----------------------------------------------------------------------------
+# 高级配置
+# -----------------------------------------------------------------------------
+advanced:
+  # 冻结backbone（前N个epoch）
+  freeze_backbone_epochs: 0
+
+  # 梯度裁剪
+  gradient_clip: 1.0
+
+  # 标签平滑
+  label_smoothing: 0.0
+
+  # Dropout调度（逐渐减小）
+  dropout_schedule: false
+  initial_dropout: 0.5
+  final_dropout: 0.1
+
+# -----------------------------------------------------------------------------
+# 路径配置
+# -----------------------------------------------------------------------------
+paths:
+  # 输出目录
+  output_dir: "outputs/sota_training"
+
+  # Checkpoint目录
+  checkpoint_dir: "outputs/sota_training/checkpoints"
+
+  # 日志目录
+  log_dir: "outputs/sota_training/logs"
+
+  # 可视化目录
+  vis_dir: "outputs/sota_training/visualizations"
+
+# -----------------------------------------------------------------------------
+# 超参数调优建议
+# -----------------------------------------------------------------------------
+# 如果遇到问题，尝试调整以下参数：
+#
+# 🔥 显存不足：
+#   - training.batch_size: 8 → 4
+#   - data.max_video_frames: 16 → 8
+#   - fusion.bottleneck_dim: 32 → 16
+#   - hardware.mixed_precision: true
+#   - hardware.gradient_accumulation_steps: 2
+#
+# 📉 训练不收敛：
+#   - training.learning_rate: 1e-4 → 1e-5
+#   - loss.lambda_contrastive: 0.3 → 0.1
+#   - loss.lambda_kd: 0.2 → 0.1
+#   - semi_supervised.confidence_threshold: 0.95 → 0.90
+#
+# ⏱️ 训练太慢：
+#   - fusion.bottleneck_dim: 32 → 16
+#   - fusion.num_layers: 2 → 1
+#   - data.max_video_frames: 16 → 8
+#   - hardware.num_workers: 4 → 8
+#
+# 🎯 过拟合：
+#   - fusion.dropout: 0.1 → 0.3
+#   - training.weight_decay: 1e-4 → 1e-3
+#   - augmentation强度增加
+#   - advanced.label_smoothing: 0.0 → 0.1
+#
+# 🎯 欠拟合：
+#   - training.num_epochs: 100 → 200
+#   - fusion.num_layers: 2 → 3
+#   - fusion.dropout: 0.1 → 0.05
+#   - training.learning_rate: 1e-4 → 3e-4
+# =============================================================================

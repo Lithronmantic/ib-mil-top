@@ -1,0 +1,29 @@
+Looking in indexes: https://pypi.tuna.tsinghua.edu.cn/simple
+Collecting transformers
+  Downloading https://pypi.tuna.tsinghua.edu.cn/packages/51/51/b87caa939fedf307496e4dbf412f4b909af3d9ca8b189fc3b65c1faa456f/transformers-4.46.3-py3-none-any.whl (10.0 MB)
+     ---------------------------------------- 10.0/10.0 MB 7.1 MB/s eta 0:00:00
+Requirement already satisfied: filelock in d:\annaconda\envs\torch\lib\site-packages (from transformers) (3.13.1)
+Collecting huggingface-hub<1.0,>=0.23.2 (from transformers)
+  Downloading https://pypi.tuna.tsinghua.edu.cn/packages/31/a0/651f93d154cb72323358bf2bbae3e642bdb5d2f1bfc874d096f7cb159fa0/huggingface_hub-0.35.3-py3-none-any.whl (564 kB)
+     -------------------------------------- 564.3/564.3 kB 9.7 MB/s eta 0:00:00
+Requirement already satisfied: numpy>=1.17 in d:\annaconda\envs\torch\lib\site-packages (from transformers) (1.24.3)
+Requirement already satisfied: packaging>=20.0 in d:\annaconda\envs\torch\lib\site-packages (from transformers) (25.0)
+Requirement already satisfied: pyyaml>=5.1 in d:\annaconda\envs\torch\lib\site-packages (from transformers) (6.0.2)
+Collecting regex!=2019.12.17 (from transformers)
+  Downloading https://pypi.tuna.tsinghua.edu.cn/packages/cf/69/c39e16320400842eb4358c982ef5fc680800866f35ebfd4dd38a22967ce0/regex-2024.11.6-cp38-cp38-win_amd64.whl (274 kB)
+Requirement already satisfied: requests in d:\annaconda\envs\torch\lib\site-packages (from transformers) (2.32.3)
+Collecting tokenizers<0.21,>=0.20 (from transformers)
+  Downloading https://pypi.tuna.tsinghua.edu.cn/packages/67/40/bd86347e7178a489476a922f004b396335d4f7ceab40ef01dbbf47dbae64/tokenizers-0.20.3-cp38-none-win_amd64.whl (2.4 MB)
+     ---------------------------------------- 2.4/2.4 MB 19.3 MB/s eta 0:00:00
+Collecting safetensors>=0.4.1 (from transformers)
+  Downloading https://pypi.tuna.tsinghua.edu.cn/packages/69/e2/b011c38e5394c4c18fb5500778a55ec43ad6106126e74723ffaee246f56e/safetensors-0.5.3-cp38-abi3-win_amd64.whl (308 kB)
+Requirement already satisfied: tqdm>=4.27 in d:\annaconda\envs\torch\lib\site-packages (from transformers) (4.67.1)
+Requirement already satisfied: fsspec>=2023.5.0 in d:\annaconda\envs\torch\lib\site-packages (from huggingface-hub<1.0,>=0.23.2->transformers) (2025.3.0)
+Requirement already satisfied: typing-extensions>=3.7.4.3 in d:\annaconda\envs\torch\lib\site-packages (from huggingface-hub<1.0,>=0.23.2->transformers) (4.11.0)
+Requirement already satisfied: colorama in d:\annaconda\envs\torch\lib\site-packages (from tqdm>=4.27->transformers) (0.4.6)
+Requirement already satisfied: charset-normalizer<4,>=2 in d:\annaconda\envs\torch\lib\site-packages (from requests->transformers) (3.3.2)
+Requirement already satisfied: idna<4,>=2.5 in d:\annaconda\envs\torch\lib\site-packages (from requests->transformers) (3.7)
+Requirement already satisfied: urllib3<3,>=1.21.1 in d:\annaconda\envs\torch\lib\site-packages (from requests->transformers) (2.2.3)
+Requirement already satisfied: certifi>=2017.4.17 in d:\annaconda\envs\torch\lib\site-packages (from requests->transformers) (2024.8.30)
+Installing collected packages: safetensors, regex, huggingface-hub, tokenizers, transformers
+Successfully installed huggingface-hub-0.35.3 regex-2024.11.6 safetensors-0.5.3 tokenizers-0.20.3 transformers-4.46.3

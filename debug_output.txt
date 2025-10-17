@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "tools/debug_one_batch.py", line 11, in <module>
+    from src.avtop.models.enhanced_detector import EnhancedAVDetector
+ModuleNotFoundError: No module named 'src.avtop'
