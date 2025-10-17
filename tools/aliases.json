@@ -1,0 +1,12 @@
+{
+  "good": "Good",
+  "good_weld": "Good",
+  "goodweld": "Good",
+
+  "ok": "Good",
+  "normal": "Good",
+
+  "lack_of_fusion": "Defect",
+  "lackoffusion": "Defect",
+  "bad": "Defect"
+}
