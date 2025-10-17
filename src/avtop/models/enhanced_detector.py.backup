@@ -1,0 +1,252 @@
+# -*- coding: utf-8 -*-
+from typing import Any, Optional
+import os, inspect
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from .backbones import VideoBackbone, AudioBackbone
+from ..fusion.cfa_fusion import CFAFusion
+from .temporal_encoder import SimpleTemporalEncoder
+from ..mil.enhanced_mil import EnhancedMIL
+
+DEBUG = os.environ.get("AVTOP_DEBUG", "0") == "1"
+def dprint(*a):
+    if DEBUG: print("[AVTOP][Detector]", *a)
+def _shape(x):
+    if x is None:
+        return None
+    import torch
+    if torch.is_tensor(x):
+        return tuple(x.shape)
+    if isinstance(x, (list, tuple)):
+        return tuple(_shape(t) for t in x)
+    if isinstance(x, dict):
+        return {k: _shape(v) for k, v in x.items()}
+    return type(x).__name__
+
+def _as_tensor(x):
+    """从 tuple/list/dict 里抽出用于后续时序/分类头的主张量。"""
+    import torch
+    if torch.is_tensor(x):
+        return x
+    if isinstance(x, (list, tuple)):
+        for t in x:
+            if torch.is_tensor(t):
+                return t
+    if isinstance(x, dict):
+        for k in ("fused", "x", "out", "z", "output", "feat", "hidden"):
+            v = x.get(k)
+            if torch.is_tensor(v):
+                return v
+        for v in x.values():
+            if torch.is_tensor(v):
+                return v
+    raise TypeError("CFAFusion.forward 需返回 Tensor 或包含 Tensor 的结构，当前无法抽取主张量。")
+def _split_va_from_fusion(out, expect_each: int, layout: str):
+    """
+    从融合模块的返回值里拆出 (v_fused, a_fused)。
+    - out: 可能是 Tensor / (Tensor, Tensor, ...) / dict
+    - expect_each: 每路的通道维（比如 512）
+    - layout: 'BTD' 或 'BDT'（我们在 forward 里记录）
+    """
+    import torch
+    # 1) 直接返回两个张量的情况：tuple / list / dict
+    if isinstance(out, (list, tuple)):
+        vs = [t for t in out if torch.is_tensor(t)]
+        if len(vs) >= 2:
+            return vs[0], vs[1]
+    if isinstance(out, dict):
+        for k_v, k_a in [('v','a'), ('video','audio'), ('v_out','a_out'),
+                         ('vfeat','afeat'), ('video_out','audio_out')]:
+            if k_v in out and k_a in out and torch.is_tensor(out[k_v]) and torch.is_tensor(out[k_a]):
+                return out[k_v], out[k_a]
+        # 兜底：字典里随便找两个张量
+        vs = [v for v in out.values() if torch.is_tensor(v)]
+        if len(vs) >= 2:
+            return vs[0], vs[1]
+    # 2) 单个张量：可能把 v/a 拼在一起了，按维度拆
+    if torch.is_tensor(out):
+        if out.dim() == 3:
+            if layout == 'BTD' and out.size(-1) == 2 * expect_each:
+                return out[..., :expect_each], out[..., expect_each:]
+            if layout == 'BDT' and out.size(1) == 2 * expect_each:
+                return out[:, :expect_each, :], out[:, expect_each:, :]
+    return None  # 仍然拆不出来
+
+
+def _safe_get(cfg: Any, path: str, default=None):
+    cur = cfg
+    for k in path.split("."):
+        if cur is None: return default
+        if isinstance(cur, dict): cur = cur.get(k, None)
+        else: cur = getattr(cur, k, None)
+    return default if cur is None else cur
+
+def _interp_time(feat: torch.Tensor, tgt_len: int) -> torch.Tensor:
+    B, T, C = feat.shape
+    if T == tgt_len: return feat
+    x = feat.permute(0, 2, 1)
+    x = F.interpolate(x, size=tgt_len, mode="linear", align_corners=False)
+    return x.permute(0, 2, 1).contiguous()
+
+class EnhancedAVTopDetector(nn.Module):
+    def __init__(self, cfg: Any):
+        super().__init__()
+        # ---- cfg ----
+        v_type = _safe_get(cfg, "model.video.backbone", "resnet18_2d")
+        a_type = _safe_get(cfg, "model.audio.backbone", "vggish")
+        a_sr   = _safe_get(cfg, "data.audio.sample_rate", 16000)
+        mel_bins = _safe_get(cfg, "data.mel", 64)  # ⭐ Auto-added by fix script
+        num_classes = (_safe_get(cfg, "data.num_classes", None)
+                       or _safe_get(cfg, "model.num_classes", 2) or 2)
+        # 先用配置里给的 d_model，当探测到 fusion 的真实 in_features 再覆盖
+        d_guess = _safe_get(cfg, "model.fusion.d_model", 256)
+        temporal_d_model = _safe_get(cfg, "model.temporal.d_model", 256)
+        temporal_layers  = _safe_get(cfg, "model.temporal.n_layers", 2)
+        dprint(f"cfg: v={v_type}, a={a_type}, sr={a_sr}, num_classes={num_classes}, d_guess={d_guess}")
+
+        # ---- backbones ----
+        self.video_backbone = VideoBackbone(backbone_type=v_type, pretrained=True, freeze=False)
+        self.audio_backbone = AudioBackbone(
+            backbone_type=a_type, 
+            pretrained=True, 
+            sample_rate=a_sr, 
+            mel_bins=mel_bins,  # ⭐ Auto-added by fix script
+            freeze=False
+        )
+        v_dim = getattr(self.video_backbone, "out_dim", 512)
+        a_dim = getattr(self.audio_backbone, "out_dim", 128)
+        dprint(f"backbone out_dims: v_dim={v_dim}, a_dim={a_dim}")
+
+        # ---- 先实例化 fusion（确保是实例，训练脚本要用 .parameters()）----
+        # 注：某些实现无视 ctor 传入的 d_v/d_a，用内部固定维度（如 512）建权重
+        try:
+            self.fusion = CFAFusion(d_v=d_guess, d_a=d_guess, d_model=d_guess)
+            ctor_mode = "dual(d_v,d_a,...)"
+        except TypeError:
+            try:
+                self.fusion = CFAFusion(d_in=2 * d_guess)
+                ctor_mode = "single(d_in)"
+            except TypeError:
+                self.fusion = CFAFusion(2 * d_guess)
+                ctor_mode = "single(positional)"
+        try:
+            fusion_sig = str(inspect.signature(self.fusion.forward))
+        except Exception:
+            fusion_sig = "<unknown>"
+        dprint(f"CFAFusion ctor_mode={ctor_mode}; forward signature={fusion_sig}")
+
+        # ---- 探测 fusion 期望的 concat 输入维度 ----
+        # 经验：很多实现会在 forward 里先 cat(v,a) -> Linear(in=2*d_each, out=...)
+        expected_each = None
+        for name, m in self.fusion.named_modules():
+            if isinstance(m, nn.Linear):
+                # F.linear(input, W) 里会用 input @ W.T
+                # 因此 W.shape=(out, in) -> in_features = W.shape[1]
+                in_feat = m.in_features if hasattr(m, "in_features") else m.weight.shape[1]
+                if in_feat % 2 == 0 and in_feat >= 512:
+                    expected_each = in_feat // 2
+                    dprint(f"probe fusion Linear[{name}]: in_features={in_feat} -> expected_each={expected_each}")
+                    break
+        if expected_each is None:
+            # 探测失败就用猜测值（若你知道固定是 512，直接写死 512 也行）
+            expected_each = max(512, d_guess)
+            dprint(f"probe fusion failed; fallback expected_each={expected_each}")
+
+        # ---- 统一通道维：v_proj / a_proj ----
+        self.branch_dim = expected_each  # 每路投到这个维度（多半是 512）
+        self.v_proj = nn.Identity() if v_dim == self.branch_dim else nn.Linear(v_dim, self.branch_dim)
+        self.a_proj = nn.Identity() if a_dim == self.branch_dim else nn.Linear(a_dim, self.branch_dim)
+        dprint(f"proj: v_dim {v_dim}->{self.branch_dim}, a_dim {a_dim}->{self.branch_dim}")
+
+        # ---- Temporal + Head ----
+        try:
+            self.temporal_encoder = SimpleTemporalEncoder(d_model=temporal_d_model, n_layers=temporal_layers)
+            self.temporal_out_dim = getattr(self.temporal_encoder, "out_dim", temporal_d_model)
+        except TypeError:
+            self.temporal_encoder = SimpleTemporalEncoder()
+            self.temporal_out_dim = getattr(self.temporal_encoder, "out_dim", temporal_d_model)
+
+        self.head = self._make_mil_head(self.temporal_out_dim, num_classes)
+
+        # ---- 别名（训练脚本 param groups 兼容）----
+        self.backbone_v = self.video_backbone
+        self.backbone_a = self.audio_backbone
+        self.temporal   = self.temporal_encoder
+        self.mil        = self.head
+        self.classifier = self.head
+
+    def _make_mil_head(self, in_dim: int, num_classes: int):
+        try: return EnhancedMIL(in_dim, num_classes)
+        except TypeError: pass
+        try: return EnhancedMIL(in_dim)
+        except TypeError: pass
+        for kw_in in ("in_dim", "d_in", "input_dim", "dim"):
+            try: return EnhancedMIL(**{kw_in: in_dim, "num_classes": num_classes})
+            except TypeError: continue
+        raise TypeError("无法实例化 EnhancedMIL：请检查 EnhancedMIL.__init__ 签名。")
+
+    def forward(self, *args, **kwargs):
+        # 支持 (video, audio) 或 batch dict
+        if len(args) == 1 and isinstance(args[0], dict):
+            b = args[0]
+            video = b.get("video") or b.get("frames") or b.get("x_v") or b.get("v")
+            audio = b.get("audio") or b.get("waveform") or b.get("x_a") or b.get("a")
+        else:
+            video = args[0] if len(args) > 0 else kwargs.get("video")
+            audio = args[1] if len(args) > 1 else kwargs.get("audio")
+        assert video is not None and audio is not None, "forward() 需要提供 video 与 audio"
+
+        # 1) 特征
+        v = self.video_backbone(video)   # (B, Tv, Dv)
+        a = self.audio_backbone(audio)   # (B, Ta, Da)
+        Tv = v.size(1)
+        a = _interp_time(a, Tv)          # (B, Tv, Da)
+        dprint(f"backbone: v={_shape(v)}, a_aligned={_shape(a)}")
+
+        # 2) 通道对齐到 expected_each（多半=512）
+        v = self.v_proj(v)               # (B, Tv, D)
+        a = self.a_proj(a)               # (B, Tv, D)
+        dprint(f"after proj: v={_shape(v)}, a={_shape(a)}; calling fusion(v,a) as (B,T,D)")
+
+        # 3) 融合（按签名 (v,a)，且不传 mask）
+        layout = 'BTD'
+        try:
+            f_out = self.fusion(v, a)  # 先按 (B,T,D)
+            dprint("fusion (B,T,D) ->", _shape(f_out))
+        except RuntimeError as e1:
+            dprint("fusion (B,T,D) failed:", repr(e1), "try (B,D,T)")
+            v2, a2 = v.permute(0, 2, 1).contiguous(), a.permute(0, 2, 1).contiguous()
+            f_out = self.fusion(v2, a2)
+            layout = 'BDT'
+            dprint("fusion (B,D,T) ->", _shape(f_out))
+
+        # 从融合输出里拆 (v_fused, a_fused)
+        va = _split_va_from_fusion(f_out, expect_each=self.branch_dim, layout=layout)
+        if va is None:
+            # 拆不出来就退回到融合前（已经统一到同一通道维，并时间对齐）
+            dprint("fusion returned single stream; fallback to pre-fusion (v,a) for temporal.")
+            if layout == 'BDT':
+                v_fused = v2
+                a_fused = a2
+                # 还原回 (B,T,D) 以适配多数 temporal 编码器
+                v_fused = v_fused.permute(0, 2, 1).contiguous()
+                a_fused = a_fused.permute(0, 2, 1).contiguous()
+            else:
+                v_fused, a_fused = v, a
+        else:
+            v_fused, a_fused = va
+            # 如果融合是在 (B,D,T) 空间做的，就统一还原回 (B,T,D)
+            if layout == 'BDT' and v_fused.dim() == 3:
+                v_fused = v_fused.permute(0, 2, 1).contiguous()
+                a_fused = a_fused.permute(0, 2, 1).contiguous()
+
+        dprint("to temporal: v_fused=", _shape(v_fused), " a_fused=", _shape(a_fused))
+
+        # ⭐ 关键修复：把两路都传进 temporal 编码器
+        enc = self.temporal_encoder(v_fused, a_fused)
+        dprint("temporal_out=", _shape(enc))
+        out = self.head(enc)
+        dprint("head_out=", _shape(out))
+        return out
